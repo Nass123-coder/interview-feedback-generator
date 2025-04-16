@@ -1,0 +1,134 @@
+from keras.models import load_model
+import cv2
+import numpy as np
+import librosa
+import moviepy.editor as mp
+import os
+import tempfile
+
+# Load the pre-trained emotion recognition model
+def load_emotion_recognition_model():
+    return load_model("fer2013_mini_XCEPTION.102-0.66.hdf5", compile=False)
+
+# Haar Cascade face detector
+face_detector = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+
+# Preprocessing function for face ROI
+def preprocess(face_roi):
+    face = cv2.cvtColor(face_roi, cv2.COLOR_BGR2GRAY)
+    face = cv2.resize(face, (64, 64))
+    face = face.astype("float32") / 255.0
+    face = np.expand_dims(face, axis=-1)
+    face = np.expand_dims(face, axis=0)
+    return face
+
+# Dummy confidence score calculation
+def calculate_confidence_from_emotions(emotions):
+    return float(np.max(emotions)) * 100
+
+# Analyze facial expressions
+def analyze_emotion_patterns(timeline):
+    emotion_counts = np.zeros(timeline[0].shape[1])
+    for emo in timeline:
+        emotion_counts += emo[0]
+    most_common_index = int(np.argmax(emotion_counts))
+    emotion_labels = ["Angry", "Disgust", "Fear", "Happy", "Sad", "Surprise", "Neutral"]
+    return {
+        "most_common_emotion": emotion_labels[most_common_index],
+        "emotion_distribution": dict(zip(emotion_labels, emotion_counts.round(2).tolist()))
+    }
+
+# Analyze confidence scores
+def analyze_confidence_trends(confidences):
+    avg_conf = sum(confidences) / len(confidences) if confidences else 0
+    return {"average_confidence": round(avg_conf, 2)}
+
+# Estimate eye contact (basic)
+def estimate_eye_contact(face_x, frame_width):
+    center_frame = frame_width // 2
+    face_center = face_x + 32  # Assuming face ROI is 64x64
+    return "good" if abs(face_center - center_frame) < 50 else "poor"
+
+# Speech rate analysis (words per minute) + filler detection
+def analyze_speech(audio_path):
+    try:
+        y, sr = librosa.load(audio_path)
+        duration_sec = librosa.get_duration(y=y, sr=sr)
+
+        import speech_recognition as sr
+        r = sr.Recognizer()
+        with sr.AudioFile(audio_path) as source:
+            audio = r.record(source)
+        transcript = r.recognize_google(audio)
+
+        words = transcript.split()
+        filler_words = [w for w in words if w.lower() in ["um", "uh", "like", "you know"]]
+        speech_rate = len(words) / (duration_sec / 60)
+
+        return {
+            "speech_rate_wpm": round(speech_rate, 2),
+            "filler_words_used": filler_words,
+            "total_words": len(words)
+        }
+    except Exception as e:
+        return {"speech_analysis_error": str(e)}
+
+# Main analyzer
+def analyze_facial_expression(video):
+    emotional_model = load_emotion_recognition_model()
+
+    confidence_scores = []
+    emotion_timeline = []
+    eye_contact_scores = []
+
+    cap = cv2.VideoCapture(video)
+    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        faces = face_detector.detectMultiScale(frame, scaleFactor=1.3, minNeighbors=5)
+
+        for (x, y, w, h) in faces:
+            face_roi = frame[y:y+h, x:x+w]
+            emotions = emotional_model.predict(preprocess(face_roi))
+            confidence_score = calculate_confidence_from_emotions(emotions)
+            eye_contact = estimate_eye_contact(x, frame_width)
+
+            confidence_scores.append(confidence_score)
+            emotion_timeline.append(emotions)
+            eye_contact_scores.append(eye_contact)
+
+    cap.release()
+
+    eye_contact_quality = "good" if eye_contact_scores.count("good") > len(eye_contact_scores) / 2 else "poor"
+
+    emotion_analysis = analyze_emotion_patterns(emotion_timeline)
+    confidence_analysis = analyze_confidence_trends(confidence_scores)
+
+    # --- Extract audio to temp file ---
+    temp_audio = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    audio_clip = mp.VideoFileClip(video).audio
+    audio_clip.write_audiofile(temp_audio.name, verbose=False, logger=None)
+
+    # Analyze speech from audio
+    speech_result = analyze_speech(temp_audio.name)
+    os.unlink(temp_audio.name)
+
+    return {
+        "emotion_analysis": emotion_analysis,
+        "confidence_analysis": confidence_analysis,
+        "non_verbal_analysis": {
+            "eye_contact": eye_contact_quality
+        },
+        "verbal_analysis": speech_result
+    }
+
+# Run the analysis
+result = analyze_facial_expression(r'C://Users//DELL//Videos//Captures//Title 2025-04-03 21-14-58.mp4')
+print(result)
+
+
+6d0bb850baca4243160e585f3f4bfd31b3a74392d1251f6d98f51d8870c0fb57
